@@ -17,7 +17,11 @@
    [K5] WPML 인덱스 연속성(0..N−1), 소티별 WP 수 합계 = 전체
    [K6] WPML 짐벌 피치 = α−90° (±0.1°), 헤딩 ∈ [−180,180] & 기대값 일치
    [K7] executeHeight = ENU z − 이륙점 z 일치 ≤ 1 cm
- 산출물: slope_mission_review.kml, slope_mission_sortie1.kmz, _sortie2.kmz
+   [K8] review KML에 전 웨이포인트가 Point Placemark로 표시(라벨만 축소)
+   [K9] surface_mesh 지정 시 기준면이 반투명 Polygon으로 함께 임베드
+   [K10] surface_max_faces 초과 메시는 KML 비대화 방지 위해 자동 생략
+ 산출물: slope_mission_review.kml, slope_mission_sortie1.kmz, _sortie2.kmz,
+        slope_mission_surf_review.kml, slope_mission_surf_big_review.kml
 ================================================================================
 """
 
@@ -125,6 +129,28 @@ def main():
                    np.sort(enu[:, 2] - TAKEOFF_Z)).max()
     checks.append(("K7 executeHeight 상대고도", h_err <= 0.01,
                    f"ENU z−이륙점 대비 최대오차 {h_err*100:.2f} cm"))
+
+    # ── [K8] 전 웨이포인트 포인트 표시 ──
+    pts_el = tree.findall(".//k:Placemark/k:Point", NSK)
+    checks.append(("K8 전 웨이포인트 점 표시", len(pts_el) == len(res.waypoints),
+                   f"Point Placemark {len(pts_el)}개 = 웨이포인트 {len(res.waypoints)}개"))
+
+    # ── [K9][K10] 기준면 폴리곤 오버레이(임베드/자동생략) ──
+    small_mesh = make_synthetic_slope(ALPHA, ASPECT, width_m=20, length_m=10, grid=4)
+    export_mission(res.waypoints, res.sortie_index, ANCHOR,
+                   out_prefix="slope_mission_surf", speed_ms=2.5,
+                   takeoff_z_m=TAKEOFF_Z, surface_mesh=small_mesh)
+    n_pol = len(ET.parse("slope_mission_surf_review.kml").findall(".//k:Polygon", NSK))
+    checks.append(("K9 기준면 폴리곤 임베드", n_pol == len(small_mesh.faces),
+                   f"Polygon {n_pol}개 = 메시 면수 {len(small_mesh.faces)}개"))
+
+    export_mission(res.waypoints, res.sortie_index, ANCHOR,
+                   out_prefix="slope_mission_surf_big", speed_ms=2.5,
+                   takeoff_z_m=TAKEOFF_Z, surface_mesh=small_mesh,
+                   surface_max_faces=len(small_mesh.faces) - 1)
+    n_pol_big = len(ET.parse("slope_mission_surf_big_review.kml").findall(".//k:Polygon", NSK))
+    checks.append(("K10 기준면 과다 시 자동 생략", n_pol_big == 0,
+                   f"면수 상한 초과 시 Polygon {n_pol_big}개(생략됨)"))
 
     # ── 판정 ──
     print("\n  ── 검증 판정 ──")

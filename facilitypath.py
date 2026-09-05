@@ -186,7 +186,7 @@ def run(a):
     banner(6, "출력 (kml_writer)")
     files, rt = export_mission(res.waypoints, res.sortie_index, ref.anchor,
                                out_prefix=prefix, speed_ms=cfg.speed_ms,
-                               takeoff_z_m=a.takeoff_z)
+                               takeoff_z_m=a.takeoff_z, surface_mesh=ref.mesh)
     write_csv(res, prefix + "_waypoints.csv"); files.append(prefix + "_waypoints.csv")
     summ = summarize(res, ref, a.mode, surf)
     summ["enu_roundtrip_err_m"] = rt

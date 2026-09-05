@@ -39,6 +39,12 @@ PAYLOAD_ENUM_P1 = 50
 
 SORTIE_COLORS = ["ff85720b", "ffc27ba0", "ff2a8cc9", "ff2aa198",
                  "ff6c71c4", "ff268bd2"]          # KML aabbggrr
+WP_COLOR = "ff00ffff"        # 일반 웨이포인트 아이콘(노랑, 라인과 대비되도록)
+WP_START_COLOR = "ff00ff00"  # 시작점(녹색)
+WP_END_COLOR = "ff0000ff"    # 종료점(적색)
+SURFACE_FILL_COLOR = "5f1478d2"    # 기준면 채움(반투명 주황빛 갈색, aabbggrr)
+SURFACE_LINE_COLOR = "ff1478d2"    # 기준면 외곽선
+SURFACE_MAX_FACES = 5000           # 이보다 큰 메시는 KML 비대화 방지 위해 생략
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -83,34 +89,68 @@ class EnuConverter:
 # ──────────────────────────────────────────────────────────────────────────────
 # ① Google Earth 검토용 KML
 # ──────────────────────────────────────────────────────────────────────────────
+def _add_surface_polygons(kml, conv: EnuConverter, mesh, max_faces: int = None):
+    """기준면 메시를 반투명 폴리곤으로 KML에 추가(면수 과다 시 생략)."""
+    max_faces = SURFACE_MAX_FACES if max_faces is None else max_faces
+    if mesh is None or len(mesh.faces) > max_faces:
+        return
+    verts_llh = conv.to_wgs84(np.asarray(mesh.vertices, float))
+    sfol = kml.newfolder(name="대상 기준면")
+    sfol.visibility = 1
+    for tri in mesh.faces:
+        ring = [tuple(verts_llh[i]) for i in tri] + [tuple(verts_llh[tri[0]])]
+        pol = sfol.newpolygon(outerboundaryis=ring)
+        pol.altitudemode = simplekml.AltitudeMode.absolute
+        pol.style.polystyle.color = SURFACE_FILL_COLOR
+        pol.style.polystyle.fill = 1
+        pol.style.polystyle.outline = 1
+        pol.style.linestyle.color = SURFACE_LINE_COLOR
+        pol.style.linestyle.width = 1
+
+
 def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
-                     name: str = "FacilityPath Mission", wp_label_step: int = 5):
+                     name: str = "FacilityPath Mission", wp_label_step: int = 5,
+                     surface_mesh=None, surface_max_faces=None):
     """
-    소티별 경로 라인 + 웨이포인트 포인트(짐벌·헤딩 ExtendedData) KML.
-    고도 absolute(타원체고) — Earth 지형 대비 이격 확인용.
+    소티별 경로 라인 + 전 웨이포인트 포인트(짐벌·헤딩 ExtendedData) + (선택)
+    기준면 반투명 폴리곤을 담은 Google Earth 검토용 KML.
+    고도 absolute(타원체고) — Earth 지형/기준면 대비 이격을 그대로 확인할 수 있다.
+    점은 전부 아이콘으로 표시하고, 텍스트 라벨만 wp_label_step 간격으로 줄여
+    과밀을 피한다(시작·끝점은 항상 라벨 표시 + 색상 구분).
     """
     enu = np.array([w.position for w in waypoints])
     llh = conv.to_wgs84(enu)
     kml = simplekml.Kml(name=name)
+    kml.document.open = 1
 
+    _add_surface_polygons(kml, conv, surface_mesh, max_faces=surface_max_faces)
+
+    n = len(waypoints)
     for s in np.unique(sortie_index):
         sel = np.where(sortie_index == s)[0]
+        color = SORTIE_COLORS[int(s) % len(SORTIE_COLORS)]
         fol = kml.newfolder(name=f"Sortie {s + 1}")
         ls = fol.newlinestring(name=f"Path S{s + 1}",
                                coords=[tuple(llh[i]) for i in sel])
         ls.altitudemode = simplekml.AltitudeMode.absolute
-        ls.style.linestyle.color = SORTIE_COLORS[int(s) % len(SORTIE_COLORS)]
-        ls.style.linestyle.width = 3
+        ls.tessellate = 1
+        ls.style.linestyle.color = color
+        ls.style.linestyle.width = 5
 
+        pfol = fol.newfolder(name="Waypoints")
         for k, i in enumerate(sel):
             w = waypoints[i]
-            if k % wp_label_step and k != len(sel) - 1:   # 라벨 과밀 방지
-                continue
-            p = fol.newpoint(name=f"WP{i}", coords=[tuple(llh[i])])
+            is_end = (i == 0 or i == n - 1)
+            show_label = is_end or k % wp_label_step == 0 or k == len(sel) - 1
+            p = pfol.newpoint(name=f"WP{i}", coords=[tuple(llh[i])])
             p.altitudemode = simplekml.AltitudeMode.absolute
-            p.style.iconstyle.scale = 0.5
+            p.extrude = 1                                  # 지면까지 수직 안내선
             p.style.iconstyle.icon.href = (
                 "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png")
+            p.style.iconstyle.scale = 0.9 if is_end else (0.7 if show_label else 0.5)
+            p.style.iconstyle.color = (WP_START_COLOR if i == 0 else
+                                        WP_END_COLOR if i == n - 1 else WP_COLOR)
+            p.style.labelstyle.scale = 0.8 if show_label else 0.0
             ed = p.extendeddata
             ed.newdata("gimbal_pitch_deg", f"{w.gimbal_pitch_deg:.2f}")
             ed.newdata("heading_deg", f"{w.heading_deg:.2f}")
@@ -266,11 +306,15 @@ def write_wpml_kmz(waypoints, conv: EnuConverter, path: str,
 
 def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
                    out_prefix: str = "mission", speed_ms: float = 2.5,
-                   takeoff_z_m: float = 0.0):
+                   takeoff_z_m: float = 0.0, surface_mesh=None,
+                   surface_max_faces=None):
     """
     통합 내보내기:
-      {prefix}_review.kml            — 전 소티 Earth 검토용
+      {prefix}_review.kml            — 전 소티 Earth 검토용(+ 기준면 폴리곤)
       {prefix}_sortie{N}.kmz         — 소티별 Pilot 2 WPML
+    surface_mesh: 대상 기준면(로컬 ENU Trimesh, 선택) — 지정 시 review KML에
+    반투명 폴리곤으로 함께 표시. surface_max_faces 초과 시(기본
+    SURFACE_MAX_FACES) 자동 생략해 KML 비대화를 막는다.
     반환: (생성 파일 목록, ENU 왕복오차[m])
     """
     conv = EnuConverter(anchor)
@@ -279,7 +323,8 @@ def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
 
     files = []
     kml_path = f"{out_prefix}_review.kml"
-    write_review_kml(waypoints, sortie_index, conv, kml_path)
+    write_review_kml(waypoints, sortie_index, conv, kml_path,
+                     surface_mesh=surface_mesh, surface_max_faces=surface_max_faces)
     files.append(kml_path)
 
     for s in np.unique(sortie_index):
