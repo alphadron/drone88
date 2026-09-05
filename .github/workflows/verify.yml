@@ -1,14 +1,10 @@
 # FacilityPath 자동 검증 — push/PR 시 4종 verify 실행
 # (주)드론아이디 AI연구소 · DID-DP-2026-0829
-#
-# 이 저장소에는 아직 FacilityPath 실제 소스(facilitypath.py, verify_*.py,
-# requirements-py314-core.txt 등)가 없어 원본 트리거(push/pull_request)로 두면
-# 항상 실패한다. 해당 파일들을 이 저장소에 추가하기 전까지는 workflow_dispatch로
-# 수동 실행만 되도록 트리거를 제한한다. 실제 프로젝트 파일이 들어오면 아래 on: 을
-# 원래대로 push/pull_request로 되돌린다.
 name: verify
 on:
-  workflow_dispatch:
+  push:
+    branches: [main, develop]
+  pull_request:
 jobs:
   verify:
     runs-on: windows-latest          # 배포 대상과 동일 OS에서 검증
