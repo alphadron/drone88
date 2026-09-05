@@ -20,8 +20,11 @@
    [K8] review KML에 전 웨이포인트가 Point Placemark로 표시(라벨만 축소)
    [K9] surface_mesh 지정 시 기준면이 반투명 Polygon으로 함께 임베드
    [K10] surface_max_faces 초과 메시는 KML 비대화 방지 위해 자동 생략
+   [K11] wp_label_step=1 → 전 웨이포인트 이름 라벨 표시
+   [K12] altitude_mode="relativeToGround" 반영 확인
  산출물: slope_mission_review.kml, slope_mission_sortie1.kmz, _sortie2.kmz,
-        slope_mission_surf_review.kml, slope_mission_surf_big_review.kml
+        slope_mission_surf_review.kml, slope_mission_surf_big_review.kml,
+        slope_mission_alllabel_review.kml, slope_mission_rtg_review.kml
 ================================================================================
 """
 
@@ -151,6 +154,27 @@ def main():
     n_pol_big = len(ET.parse("slope_mission_surf_big_review.kml").findall(".//k:Polygon", NSK))
     checks.append(("K10 기준면 과다 시 자동 생략", n_pol_big == 0,
                    f"면수 상한 초과 시 Polygon {n_pol_big}개(생략됨)"))
+
+    # ── [K11] wp_label_step=1 → 전 웨이포인트 라벨 표시 ──
+    export_mission(res.waypoints, res.sortie_index, ANCHOR,
+                   out_prefix="slope_mission_alllabel", speed_ms=2.5,
+                   takeoff_z_m=TAKEOFF_Z, wp_label_step=1)
+    label_tree = ET.parse("slope_mission_alllabel_review.kml")
+    label_scales = [float(e.text) for e in
+                    label_tree.findall(".//k:Folder/k:Style/k:LabelStyle/k:scale", NSK)]
+    checks.append(("K11 전 웨이포인트 라벨(step=1)",
+                   len(label_scales) == len(res.waypoints) and all(s > 0 for s in label_scales),
+                   f"라벨 scale>0 인 Placemark {sum(s>0 for s in label_scales)}개 "
+                   f"= 웨이포인트 {len(res.waypoints)}개"))
+
+    # ── [K12] altitude_mode=relativeToGround 반영 ──
+    export_mission(res.waypoints, res.sortie_index, ANCHOR,
+                   out_prefix="slope_mission_rtg", speed_ms=2.5,
+                   takeoff_z_m=TAKEOFF_Z, altitude_mode="relativeToGround")
+    rtg_modes = {e.text for e in
+                 ET.parse("slope_mission_rtg_review.kml").findall(".//k:altitudeMode", NSK)}
+    checks.append(("K12 relativeToGround 고도모드", rtg_modes == {"relativeToGround"},
+                   f"altitudeMode 집합 {rtg_modes}"))
 
     # ── 판정 ──
     print("\n  ── 검증 판정 ──")

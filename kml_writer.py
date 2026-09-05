@@ -89,7 +89,12 @@ class EnuConverter:
 # ──────────────────────────────────────────────────────────────────────────────
 # ① Google Earth 검토용 KML
 # ──────────────────────────────────────────────────────────────────────────────
-def _add_surface_polygons(kml, conv: EnuConverter, mesh, max_faces: int = None):
+_ALT_MODES = {"absolute": simplekml.AltitudeMode.absolute,
+              "relativeToGround": simplekml.AltitudeMode.relativetoground}
+
+
+def _add_surface_polygons(kml, conv: EnuConverter, mesh, max_faces: int = None,
+                          altmode=simplekml.AltitudeMode.absolute):
     """기준면 메시를 반투명 폴리곤으로 KML에 추가(면수 과다 시 생략)."""
     max_faces = SURFACE_MAX_FACES if max_faces is None else max_faces
     if mesh is None or len(mesh.faces) > max_faces:
@@ -100,7 +105,7 @@ def _add_surface_polygons(kml, conv: EnuConverter, mesh, max_faces: int = None):
     for tri in mesh.faces:
         ring = [tuple(verts_llh[i]) for i in tri] + [tuple(verts_llh[tri[0]])]
         pol = sfol.newpolygon(outerboundaryis=ring)
-        pol.altitudemode = simplekml.AltitudeMode.absolute
+        pol.altitudemode = altmode
         pol.style.polystyle.color = SURFACE_FILL_COLOR
         pol.style.polystyle.fill = 1
         pol.style.polystyle.outline = 1
@@ -110,20 +115,27 @@ def _add_surface_polygons(kml, conv: EnuConverter, mesh, max_faces: int = None):
 
 def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
                      name: str = "FacilityPath Mission", wp_label_step: int = 5,
-                     surface_mesh=None, surface_max_faces=None):
+                     surface_mesh=None, surface_max_faces=None,
+                     altitude_mode: str = "absolute"):
     """
     소티별 경로 라인 + 전 웨이포인트 포인트(짐벌·헤딩 ExtendedData) + (선택)
     기준면 반투명 폴리곤을 담은 Google Earth 검토용 KML.
-    고도 absolute(타원체고) — Earth 지형/기준면 대비 이격을 그대로 확인할 수 있다.
-    점은 전부 아이콘으로 표시하고, 텍스트 라벨만 wp_label_step 간격으로 줄여
-    과밀을 피한다(시작·끝점은 항상 라벨 표시 + 색상 구분).
+    altitude_mode: "absolute"(기준점 타원체고 + z — Earth 실제 지형/기준면
+    대비 이격 확인용, 기준점 고도가 부정확하면 경로가 지형에 파묻혀 안 보일
+    수 있음) 또는 "relativeToGround"(실제 지형 표면 기준 상대고도 — 기준점
+    고도 오차와 무관하게 항상 지표 위에 보이므로 화면 확인용으로 더 안전).
+    점은 전부 아이콘으로 표시하고, wp_label_step=1이면 전 웨이포인트 이름을
+    모두 표시한다(기본 5면 과밀 방지를 위해 라벨만 축소, 시작·끝점은 항상
+    라벨 표시 + 색상 구분).
     """
+    altmode = _ALT_MODES[altitude_mode]
     enu = np.array([w.position for w in waypoints])
     llh = conv.to_wgs84(enu)
     kml = simplekml.Kml(name=name)
     kml.document.open = 1
 
-    _add_surface_polygons(kml, conv, surface_mesh, max_faces=surface_max_faces)
+    _add_surface_polygons(kml, conv, surface_mesh, max_faces=surface_max_faces,
+                          altmode=altmode)
 
     n = len(waypoints)
     for s in np.unique(sortie_index):
@@ -132,10 +144,10 @@ def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
         fol = kml.newfolder(name=f"Sortie {s + 1}")
         ls = fol.newlinestring(name=f"Path S{s + 1}",
                                coords=[tuple(llh[i]) for i in sel])
-        ls.altitudemode = simplekml.AltitudeMode.absolute
+        ls.altitudemode = altmode
         ls.tessellate = 1
         ls.style.linestyle.color = color
-        ls.style.linestyle.width = 5
+        ls.style.linestyle.width = 6
 
         pfol = fol.newfolder(name="Waypoints")
         for k, i in enumerate(sel):
@@ -143,14 +155,15 @@ def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
             is_end = (i == 0 or i == n - 1)
             show_label = is_end or k % wp_label_step == 0 or k == len(sel) - 1
             p = pfol.newpoint(name=f"WP{i}", coords=[tuple(llh[i])])
-            p.altitudemode = simplekml.AltitudeMode.absolute
+            p.altitudemode = altmode
             p.extrude = 1                                  # 지면까지 수직 안내선
             p.style.iconstyle.icon.href = (
                 "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png")
-            p.style.iconstyle.scale = 0.9 if is_end else (0.7 if show_label else 0.5)
+            p.style.iconstyle.scale = 1.1 if is_end else (0.85 if show_label else 0.65)
             p.style.iconstyle.color = (WP_START_COLOR if i == 0 else
                                         WP_END_COLOR if i == n - 1 else WP_COLOR)
-            p.style.labelstyle.scale = 0.8 if show_label else 0.0
+            p.style.labelstyle.scale = 0.75 if show_label else 0.0
+            p.style.labelstyle.color = "ffffffff"
             ed = p.extendeddata
             ed.newdata("gimbal_pitch_deg", f"{w.gimbal_pitch_deg:.2f}")
             ed.newdata("heading_deg", f"{w.heading_deg:.2f}")
@@ -307,7 +320,8 @@ def write_wpml_kmz(waypoints, conv: EnuConverter, path: str,
 def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
                    out_prefix: str = "mission", speed_ms: float = 2.5,
                    takeoff_z_m: float = 0.0, surface_mesh=None,
-                   surface_max_faces=None):
+                   surface_max_faces=None, wp_label_step: int = 5,
+                   altitude_mode: str = "absolute"):
     """
     통합 내보내기:
       {prefix}_review.kml            — 전 소티 Earth 검토용(+ 기준면 폴리곤)
@@ -315,6 +329,8 @@ def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
     surface_mesh: 대상 기준면(로컬 ENU Trimesh, 선택) — 지정 시 review KML에
     반투명 폴리곤으로 함께 표시. surface_max_faces 초과 시(기본
     SURFACE_MAX_FACES) 자동 생략해 KML 비대화를 막는다.
+    wp_label_step: 웨이포인트 이름 라벨 표시 간격(1=전부 표시).
+    altitude_mode: write_review_kml 참고("absolute"|"relativeToGround").
     반환: (생성 파일 목록, ENU 왕복오차[m])
     """
     conv = EnuConverter(anchor)
@@ -324,7 +340,8 @@ def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
     files = []
     kml_path = f"{out_prefix}_review.kml"
     write_review_kml(waypoints, sortie_index, conv, kml_path,
-                     surface_mesh=surface_mesh, surface_max_faces=surface_max_faces)
+                     surface_mesh=surface_mesh, surface_max_faces=surface_max_faces,
+                     wp_label_step=wp_label_step, altitude_mode=altitude_mode)
     files.append(kml_path)
 
     for s in np.unique(sortie_index):

@@ -186,7 +186,9 @@ def run(a):
     banner(6, "출력 (kml_writer)")
     files, rt = export_mission(res.waypoints, res.sortie_index, ref.anchor,
                                out_prefix=prefix, speed_ms=cfg.speed_ms,
-                               takeoff_z_m=a.takeoff_z, surface_mesh=ref.mesh)
+                               takeoff_z_m=a.takeoff_z, surface_mesh=ref.mesh,
+                               wp_label_step=a.wp_label_step,
+                               altitude_mode=a.kml_altmode)
     write_csv(res, prefix + "_waypoints.csv"); files.append(prefix + "_waypoints.csv")
     summ = summarize(res, ref, a.mode, surf)
     summ["enu_roundtrip_err_m"] = rt
@@ -227,6 +229,14 @@ def build_parser():
         s.add_argument("--clearance", type=float, default=5.0, help="표면 최소 이격 [m]")
         s.add_argument("--endurance", type=float, default=25.0, help="소티 한계 [분]")
         s.add_argument("--takeoff-z", type=float, default=0.0, help="이륙점 ENU z [m]")
+        v = sp.add_argument_group("Earth 검토 KML")
+        v.add_argument("--wp-label-step", type=int, default=5,
+                       help="웨이포인트 이름 라벨 표시 간격(1=전 웨이포인트 표시)")
+        v.add_argument("--kml-altmode", choices=["absolute", "relativeToGround"],
+                       default="absolute",
+                       help="review KML 고도 기준. absolute=기준점 타원체고+z"
+                            "(기준점 고도가 부정확하면 지형에 파묻혀 안 보일 수 있음), "
+                            "relativeToGround=실제 지표 기준(항상 지표 위에 표시)")
         sp.add_argument("--out", default="output", help="출력 폴더")
 
     g = sub.add_parser("generate", help="3D 모델/DSM → 경로 신규 생성")
