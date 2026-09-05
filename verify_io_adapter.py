@@ -13,7 +13,9 @@
    [F] 파사드 적응 : 수직 파사드 경로 CSV(ENU) 생성 → adapt --keep-distance
                      → 원래 이격 유지, 법선 정렬만 수행
    [O] OBJ 경로  : 투영좌표 OBJ 저장 → generate → 기존 검증과 동일 결과
- 판정 항목 12건. 산출물: verify_io/ 폴더
+   [P] 중복 KML   : Point+LineString 중복 KML(DJI Pilot 2 실물 내보내기 형태)
+                     → 웨이포인트 중복 집계 방지 (실제 파사드 KML 테스트로 발견)
+ 판정 항목 14건. 산출물: verify_io/ 폴더
 ================================================================================
 """
 
@@ -32,6 +34,7 @@ from pyproj import CRS, Transformer
 
 from surface_analyzer import make_synthetic_slope
 from kml_writer import GeoAnchor, EnuConverter
+from io_flightpath import load_flightpath
 
 OUT = "verify_io"
 ALPHA, ASPECT = 60.0, 180.0
@@ -160,6 +163,29 @@ rc = run_cli("adapt", fcsv, "--model", obj, "--epsg", str(EPSG), "--gsd", "0.5",
 sf = load_summary(os.path.join(OUT, "f")) if rc == 0 else {}
 chk("F1 파사드 적응(--keep-distance)", rc == 0 and abs(sf["min_clearance_m"] - 15.0) < 1.0,
     f"이격 {sf.get('min_clearance_m')} m (원래 15 m 유지)")
+
+# ==================== [P] DJI 스타일 KML(Point+LineString 중복) → 파싱 ==========
+print("\n[P] Point+LineString 중복 KML(DJI Pilot 2 실물 내보내기 형태) → 파싱 중복 방지")
+# 실제 DJI 내보내기는 Waypoint(Placemark/Point) n개와 이를 잇는
+# Wayline(Placemark/LineString, 동일 좌표 중복)을 같은 문서에 함께 담는다.
+# 태그 구분 없이 모든 <coordinates>를 합치면 웨이포인트 수가 두 배로 잡힌다.
+dup_pts = [(128.0, 37.0, 1.0), (128.0001, 37.0001, 2.0), (128.0002, 37.0002, 3.0)]
+placemarks = "".join(
+    f'<Placemark><Point><coordinates>{lo},{la},{al}</coordinates></Point></Placemark>'
+    for lo, la, al in dup_pts)
+line_coords = " ".join(f"{lo},{la},{al}" for lo, la, al in dup_pts)
+dup_kml = os.path.join(OUT, "dup_point_line.kml")
+os.makedirs(OUT, exist_ok=True)
+with open(dup_kml, "w", encoding="utf-8") as f:
+    f.write(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+        f'<Folder>{placemarks}</Folder>'
+        f'<Placemark><LineString><coordinates>{line_coords}</coordinates></LineString></Placemark>'
+        '</Document></kml>')
+ip = load_flightpath(dup_kml, GeoAnchor(lat=37.0001, lon=128.0001, h=0.0), alt_mode="relative")
+chk("P1 Point 우선·LineString 중복 배제", len(ip.enu) == len(dup_pts),
+    f"파싱 {len(ip.enu)}개 (기대 {len(dup_pts)}개, Point+LineString 합산 시 {2*len(dup_pts)}개로 오염)")
 
 # ── 결과 ──
 fails = sum(not ok for _, ok, _ in checks)

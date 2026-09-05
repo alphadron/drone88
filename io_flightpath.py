@@ -39,12 +39,35 @@ class InputPath:
 
 
 def _parse_kml_coords(root) -> np.ndarray:
-    pts = []
-    for el in root.iter():
-        if el.tag.endswith("coordinates") and el.text:
-            for tok in el.text.split():
-                v = [float(x) for x in tok.split(",")]
-                pts.append(v + [0.0] * (3 - len(v)))
+    """Placemark/Point 좌표를 우선 사용하고, Point가 하나도 없을 때만
+    Placemark/LineString 좌표로 대체한다. DJI Pilot 2류 KML은 개별
+    Waypoint(Point)와 이를 잇는 Wayline(LineString)을 같은 문서에 함께
+    내보내는데, 태그 구분 없이 모든 coordinates를 합치면 동일 경로가
+    두 배로 중복 집계된다."""
+    def _coords_text(placemark):
+        for c in placemark.iter():
+            if c.tag.endswith("coordinates") and c.text:
+                return c.text
+        return None
+
+    def _tokens(text):
+        out = []
+        for tok in text.split():
+            v = [float(x) for x in tok.split(",")]
+            out.append(v + [0.0] * (3 - len(v)))
+        return out
+
+    point_pts, line_pts = [], []
+    for pm in root.iter():
+        if not pm.tag.endswith("Placemark"):
+            continue
+        text = _coords_text(pm)
+        if not text:
+            continue
+        kind_tags = {c.tag.rsplit("}", 1)[-1] for c in pm.iter()}
+        (point_pts if "Point" in kind_tags else line_pts).extend(_tokens(text))
+
+    pts = point_pts or line_pts
     if not pts:
         raise ValueError("KML에 coordinates 요소가 없습니다")
     return np.array(pts)
