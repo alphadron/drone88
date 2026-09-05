@@ -22,6 +22,9 @@
 import csv
 import sys
 
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")

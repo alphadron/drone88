@@ -25,6 +25,9 @@ import sys
 import zipfile
 import xml.etree.ElementTree as ET
 
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 import numpy as np
 
 from camera import get_camera
