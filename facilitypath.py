@@ -139,7 +139,8 @@ def run(a):
         ratio_v, ratio_h = parse_ratio(a.slope_ratio)
         mesh, sinfo = build_slope_from_boundary(
             boundary_en, ratio_v, ratio_h,
-            baseline_azimuth_deg=a.baseline_azimuth, height_m=a.slope_height)
+            baseline_azimuth_deg=a.baseline_azimuth, height_m=a.slope_height,
+            flip_side=a.flip_side)
         ref = ReferenceModel(mesh, anchor, a.boundary, "boundary")
         print(f"    BOUNDARY {a.boundary} → 경계 다각형 {len(boundary_en)}점 기반 "
               f"사면 자동 구성 (정점 {len(mesh.vertices):,} / 면 {len(mesh.faces):,})")
@@ -325,6 +326,11 @@ def build_parser():
                     help="기준선 방위각[deg, 북=0 동=90] 수동 지정(미지정 시 "
                          "다각형 PCA로 자동 검출 — 곡선 구간이 섞여 자동검출이 "
                          "부정확할 때 보정용)")
+    bg.add_argument("--flip-side", action="store_true",
+                    help="다각형의 어느 쪽 끝이 오르막(크레스트)인지는 평면"
+                         "정보만으로 알 수 없어 기본값은 임의 선택된다 — 생성된 "
+                         "review KML의 사면 방향이 실제 위성사진과 반대면 이 "
+                         "옵션으로 뒤집는다")
     common(g)
 
     ad = sub.add_parser("adapt", help="기존 경로(KML/KMZ/CSV) → 시설물 형상 적응")

@@ -179,20 +179,30 @@ def _fit_baseline_pca(boundary_en: np.ndarray):
 
 def build_slope_from_boundary(boundary_en: np.ndarray, ratio_v: float, ratio_h: float,
                               baseline_azimuth_deg: float | None = None,
-                              height_m: float | None = None,
+                              height_m: float | None = None, flip_side: bool = False,
                               margin_m: float = 5.0, grid: int = 8):
     """평면 경계 다각형(로컬 ENU E,N, 폐합 불필요) + 경사비(V:H) →
     배터(batter) 형상 사면 메시를 자동 구성한다.
 
-    기준선(진행방향)은 다각형 정점의 수평 주성분(PCA)으로 자동 검출하며,
-    baseline_azimuth_deg[deg, 북=0 동=90]로 수동 지정해 자동검출을
-    보정할 수 있다(다각형이 실제 도로 굽이를 따라 휘어 있어 자동검출이
-    부정확할 때). 다각형이 기준선 기준 걸쳐진 쪽을 오르막(경사면이 바라보는
-    내리막의 반대)으로 자동 판정한다.
+    기준선 방향(진행방향)은 다각형 정점의 수평 주성분(PCA)으로 자동
+    검출하며, baseline_azimuth_deg[deg, 북=0 동=90]로 수동 지정해 보정할
+    수 있다(다각형이 실제 도로 굽이를 따라 휘어 있어 자동검출이 부정확할
+    때). 기준선의 "위치"(어디를 지나는 선인가)는 다각형 정점 전체가 그
+    수직방향으로 걸쳐 있는 범위의 양끝(최솟값~최댓값)을 그대로 toe~crest로
+    사용한다 — 다각형 중심을 지나는 선을 기준으로 삼으면 실제 폭의 절반만
+    반영되고 나머지 절반이 기준면 밖으로 벗어나는 결함이 있어(실측 검증 중
+    발견), 전체 폭을 커버하도록 수정했다.
 
-    사면 높이는 기준선에 수직한 다각형 투영폭(수평런 = toe-crest 수평거리)
-    × (V/H)로 역산하되, height_m을 지정하면 그 값을 그대로 쓴다(평면도가
-    부정확하거나 곡선 구간이 섞여 자동 추정이 실제와 다를 때 보정용).
+    다각형의 어느 쪽 끝을 오르막(크레스트)으로 볼지는 평면 정보만으로는
+    원리적으로 알 수 없으므로(고도 데이터 없음), 기본은 한쪽을 임의
+    선택하고 flip_side=True로 반대쪽으로 뒤집을 수 있게 한다 — 생성된
+    review KML을 실제 위성사진과 비교해 사면 방향이 반대면 이 옵션으로
+    보정한다("연동하여 조정 가능").
+
+    사면 높이는 기준선에 수직한 다각형 투영폭(수평런 = toe-crest 수평거리,
+    이제 전체 폭 기준) × (V/H)로 역산하되, height_m을 지정하면 그 값을
+    그대로 쓴다(평면도가 부정확하거나 곡선 구간이 섞여 자동 추정이 실제와
+    다를 때 보정용).
 
     반환: (mesh: 로컬 ENU Trimesh, info: dict — alpha_deg, aspect_deg,
     baseline_azimuth_deg, width_m, run_m, height_m, height_source)
@@ -207,12 +217,16 @@ def build_slope_from_boundary(boundary_en: np.ndarray, ratio_v: float, ratio_h: 
     perp2 = np.array([-u2[1], u2[0]])
     rel = boundary_en - C
     proj_u, proj_v = rel @ u2, rel @ perp2
-    dip2 = perp2 * (1.0 if proj_v.sum() >= 0 else -1.0)
 
-    run_m = float(np.abs(proj_v).max())
+    v_lo, v_hi = float(proj_v.min()), float(proj_v.max())
+    if flip_side:
+        v_lo, v_hi = v_hi, v_lo             # toe/crest 지정 반전
+    run_m = abs(v_hi - v_lo)
     if run_m < 1e-6:
         raise ValueError("경계 다각형이 기준선 위에 퇴화되어 있습니다 — "
                          "면적을 가진 다각형인지 확인하십시오")
+    dip2 = perp2 * math.copysign(1.0, v_hi - v_lo)   # toe→crest 진행 방향(부호 반영)
+
     alpha_deg = math.degrees(math.atan(ratio_v / ratio_h))
     if height_m is None:
         height_m = run_m * (ratio_v / ratio_h)
@@ -229,7 +243,8 @@ def build_slope_from_boundary(boundary_en: np.ndarray, ratio_v: float, ratio_h: 
     v_ax = np.array([dip2[0] * math.cos(math.radians(alpha_deg)),
                      dip2[1] * math.cos(math.radians(alpha_deg)),
                      math.sin(math.radians(alpha_deg))])
-    base = np.array([C[0], C[1], 0.0]) + u_mid * u_ax
+    toe_point = C + perp2 * v_lo                         # 실제 다각형의 toe측 극단
+    base = np.array([toe_point[0], toe_point[1], 0.0]) + u_mid * u_ax
 
     uu, vv = np.meshgrid(np.linspace(-width_m / 2, width_m / 2, grid),
                         np.linspace(0.0, length_m, grid))
@@ -242,8 +257,8 @@ def build_slope_from_boundary(boundary_en: np.ndarray, ratio_v: float, ratio_h: 
     mesh = trimesh.Trimesh(vertices=verts, faces=np.array(faces), process=False)
 
     # 실제 사면(배터) 법선의 수평 성분은 -dip2(내리막) 방향을 향한다(dip2는
-    # 기준선에서 다각형이 걸쳐진 오르막 쪽) — surface_analyzer의 aspect
-    # 규약(내리막 방위각)과 일치시키기 위해 부호를 반전해 보고한다.
+    # toe→crest, 즉 오르막 방향) — surface_analyzer의 aspect 규약(내리막
+    # 방위각)과 일치시키기 위해 부호를 반전해 보고한다.
     info = dict(alpha_deg=alpha_deg,
                aspect_deg=math.degrees(math.atan2(-dip2[0], -dip2[1])) % 360,
                baseline_azimuth_deg=math.degrees(math.atan2(u2[0], u2[1])) % 360,

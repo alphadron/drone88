@@ -18,8 +18,10 @@
    [B] 촬영 경계   : Google Earth Pro 다각형 KML(사면 서쪽 절반만 포함)
                      → generate --boundary → 다각형 밖 웨이포인트 제외 확인
    [S] 경계→사면 자동구성 : 실측 topview 다각형 + 경사비만으로(3D 모델 없이)
-                     기준선(PCA)·높이 자동 역산 → generate --slope-ratio 연동
- 판정 항목 23건. 산출물: verify_io/ 폴더
+                     기준선(PCA)·높이 자동 역산 → generate --slope-ratio 연동,
+                     기준면이 다각형 전체를 덮는지(절반 누락 회귀 방지)·
+                     flip_side 180° 반전 확인
+ 판정 항목 25건. 산출물: verify_io/ 폴더
 ================================================================================
 """
 
@@ -215,21 +217,37 @@ chk("B3 전 웨이포인트가 경계(서쪽 절반) 내부", rc == 0 and float(
 
 # ============ [S] 경계 다각형 기반 사면 자동 구성(기준선 연동) =================
 print("\n[S] 경계 다각형(Google Earth Pro 실측 topview) → 사면 자동 구성·연동")
-# S1: 함수 단위 검증 — 남북으로 긴 직사각형(bnd_kml과 동일 형상)을 로컬 ENU로
-# 직접 만들어, 기준선(남북, PCA)·수평런(폭 70m의 절반=35m)·역산 높이가
-# 경계 폭에 정확히 연동되는지 확인
+# S1: 함수 단위 검증 — 남북으로 긴 직사각형(bnd_kml과 동일 형상, 동서 폭
+# 70m)을 로컬 ENU로 직접 만들어, 기준선(남북, PCA)·수평런(전체 폭 70m —
+# 예전엔 중심선 기준 절반(35m)만 반영해 기준면이 실제 폭의 절반만 덮는
+# 결함이 있었음, 실측 스크린샷으로 발견해 전체 폭 기준으로 수정)·역산
+# 높이가 경계 폭에 정확히 연동되는지 확인
 rect_en = np.array([[-35.0, -70.0], [35.0, -70.0], [35.0, 70.0], [-35.0, 70.0]])
 mesh_s, info_s = build_slope_from_boundary(rect_en, 1.0, 0.3)
 exp_alpha = np.degrees(np.arctan(1.0 / 0.3))
-exp_run, exp_height = 35.0, 35.0 * (1.0 / 0.3)
+exp_run, exp_height = 70.0, 70.0 * (1.0 / 0.3)
 chk("S1 기준선(PCA) 남북 자동검출", abs(abs(info_s["baseline_azimuth_deg"] % 180) - 0) < 1.0,
     f"기준선 방위 {info_s['baseline_azimuth_deg']:.1f}° (남북 0/180° 기대)")
 chk("S2 경사각 1:0.3 → α=73.3°", abs(info_s["alpha_deg"] - exp_alpha) < 0.1,
     f"α={info_s['alpha_deg']:.2f}° (기대 {exp_alpha:.2f}°)")
-chk("S3 경계 폭↔수평런 연동", abs(info_s["run_m"] - exp_run) < 0.1,
-    f"run={info_s['run_m']:.2f} m (경계 반폭 {exp_run} m와 일치)")
+chk("S3 경계 전체폭↔수평런 연동", abs(info_s["run_m"] - exp_run) < 0.1,
+    f"run={info_s['run_m']:.2f} m (경계 전체폭 {exp_run} m와 일치)")
 chk("S4 수평런↔높이 자동 역산", abs(info_s["height_m"] - exp_height) < 0.5,
     f"height={info_s['height_m']:.2f} m (기대 {exp_height:.2f} m)")
+
+# S7: 메시 footprint가 다각형 전체를 덮는지(절반만 덮던 결함 회귀 방지) —
+# 다각형 각 정점이 메시의 (E,N) 바운딩박스 안에 들어오는지 확인
+mesh_bb_lo, mesh_bb_hi = mesh_s.vertices[:, :2].min(axis=0), mesh_s.vertices[:, :2].max(axis=0)
+covers_all = bool(np.all(rect_en >= mesh_bb_lo - 1e-6) and np.all(rect_en <= mesh_bb_hi + 1e-6))
+chk("S7 기준면이 다각형 전체를 커버(절반 누락 회귀 방지)", covers_all,
+    f"다각형 범위 {rect_en.min(axis=0)}~{rect_en.max(axis=0)} ⊂ 메시 범위 "
+    f"{mesh_bb_lo}~{mesh_bb_hi}")
+
+# S8: flip_side로 사면 방향(aspect)이 정확히 180° 반전되는지
+_, info_flip = build_slope_from_boundary(rect_en, 1.0, 0.3, flip_side=True)
+aspect_diff = abs((info_s["aspect_deg"] - info_flip["aspect_deg"]) % 360 - 180)
+chk("S8 flip_side로 사면방향 180° 반전", aspect_diff < 0.1,
+    f"aspect {info_s['aspect_deg']:.1f}° -> flip {info_flip['aspect_deg']:.1f}°")
 
 # S5~: CLI 통합 — input(3D모델) 없이 --boundary + --slope-ratio 만으로 generate
 rc = run_cli("generate", "--slope-ratio", "1:0.3", "--boundary", bnd_kml,
