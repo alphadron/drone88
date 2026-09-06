@@ -48,10 +48,10 @@ import numpy as np
 
 from kml_writer import GeoAnchor, export_mission
 from io_model import load_reference
-from io_flightpath import load_flightpath
+from io_flightpath import load_flightpath, load_boundary_polygon
 from surface_analyzer import SurfaceAnalyzer
 from camera import get_camera
-from planner_base import PlanConfig
+from planner_base import PlanConfig, clip_to_boundary
 from planner_slope import SlopePlanner
 from path_adapter import PathAdapter, AdaptConfig
 
@@ -128,6 +128,11 @@ def run(a):
           f"면 {len(ref.mesh.faces):,}")
     print(f"    ENU 원점: {ref.anchor.lat:.7f}N {ref.anchor.lon:.7f}E h={ref.anchor.h:.1f} m")
 
+    boundary_en = None
+    if a.boundary:
+        boundary_en = load_boundary_polygon(a.boundary, ref.anchor)
+        print(f"    촬영 경계: {a.boundary} ({len(boundary_en)}점, ENU 원점 기준)")
+
     # [2] 대상면 분석 --------------------------------------------------------------
     banner(2, "대상면 분석 (surface_analyzer)")
     analyzer = SurfaceAnalyzer(slope_min_deg=a.slope_min, slope_max_deg=a.slope_max,
@@ -156,7 +161,7 @@ def run(a):
         banner(4, f"경로 신규 생성 (planner_slope, 시설물={a.facility})")
         if a.facility != "slope":
             print(f"    ⚠ {a.facility} 전략은 M3 후속 구현 예정 — slope 전략으로 대체 실행")
-        res = planner.plan(surf, ref.mesh.vertices)
+        res = planner.plan(surf, ref.mesh.vertices, boundary_en=boundary_en)
     else:
         banner(4, "기존 경로 적응 (io_flightpath → path_adapter)")
         ip = load_flightpath(a.input, ref.anchor, alt_mode=a.alt_mode,
@@ -172,8 +177,11 @@ def run(a):
             approach_dist_m=None if a.approach is None else a.approach,
             keep_distance=a.keep_distance, max_snap_m=a.max_snap))
         res = adapter.adapt(ip.enu, ref.mesh)
+        if boundary_en is not None:
+            res = clip_to_boundary(res, boundary_en)
         res.line_spacing_m = line
-        res = planner.finalize(res, ref.mesh.vertices)      # [5] 공용 확정
+        if res.waypoints:
+            res = planner.finalize(res, ref.mesh.vertices)      # [5] 공용 확정
 
     # [5] 확정 결과 ----------------------------------------------------------------
     banner(5, "확정 (finalize: 최소이격 → 소티 → 통계)")
@@ -198,7 +206,8 @@ def run(a):
                                wp_label_step=a.wp_label_step,
                                altitude_mode=a.kml_altmode,
                                mission_name=mission_name, wp_extrude=a.wp_extrude,
-                               show_anchor_marker=a.show_anchor_marker)
+                               show_anchor_marker=a.show_anchor_marker,
+                               boundary_en=boundary_en)
     write_csv(res, prefix + "_waypoints.csv"); files.append(prefix + "_waypoints.csv")
     summ = summarize(res, ref, a.mode, surf)
     summ["enu_roundtrip_err_m"] = rt
@@ -228,6 +237,10 @@ def build_parser():
         g.add_argument("--slope-max", type=float, default=90.0)
         g.add_argument("--min-area", type=float, default=10.0)
         g.add_argument("--surface-index", type=int, default=0, help="대상면 선택(면적순)")
+        g.add_argument("--boundary",
+                       help="촬영 경계 KML(Google Earth Pro '다각형 추가'로 실제 "
+                            "법면 범위를 그려 내보낸 파일) — 지정 시 다각형 밖 "
+                            "웨이포인트를 제외한다")
         c = sp.add_argument_group("촬영")
         c.add_argument("--camera", default="P1_50mm")
         c.add_argument("--gsd", type=float, default=0.5, help="목표 GSD [cm]")

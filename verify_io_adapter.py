@@ -15,7 +15,9 @@
    [O] OBJ 경로  : 투영좌표 OBJ 저장 → generate → 기존 검증과 동일 결과
    [P] 중복 KML   : Point+LineString 중복 KML(DJI Pilot 2 실물 내보내기 형태)
                      → 웨이포인트 중복 집계 방지 (실제 파사드 KML 테스트로 발견)
- 판정 항목 14건. 산출물: verify_io/ 폴더
+   [B] 촬영 경계   : Google Earth Pro 다각형 KML(사면 서쪽 절반만 포함)
+                     → generate --boundary → 다각형 밖 웨이포인트 제외 확인
+ 판정 항목 17건. 산출물: verify_io/ 폴더
 ================================================================================
 """
 
@@ -186,6 +188,27 @@ with open(dup_kml, "w", encoding="utf-8") as f:
 ip = load_flightpath(dup_kml, GeoAnchor(lat=37.0001, lon=128.0001, h=0.0), alt_mode="relative")
 chk("P1 Point 우선·LineString 중복 배제", len(ip.enu) == len(dup_pts),
     f"파싱 {len(ip.enu)}개 (기대 {len(dup_pts)}개, Point+LineString 합산 시 {2*len(dup_pts)}개로 오염)")
+
+# ==================== [B] 촬영 경계(Google Earth Pro 다각형) 제한 ==============
+print("\n[B] 촬영 경계 다각형(Google Earth Pro 스타일 KML) → generate 범위 제한")
+# 사면 서쪽 절반만 덮는 경계 다각형(투영좌표 X0 기준 서쪽) → lon/lat로 변환해 KML 저장
+corners_xy = [(X0 - 70, Y0 - 70), (X0, Y0 - 70), (X0, Y0 + 70), (X0 - 70, Y0 + 70)]
+corners_ll = [tr.transform(x, y) for x, y in corners_xy]
+bnd_kml = os.path.join(OUT, "boundary.kml")
+bk = simplekml.Kml()
+bk.newpolygon(outerboundaryis=[(lo, la, 0.0) for lo, la in corners_ll])
+bk.save(bnd_kml)
+
+rc = run_cli("generate", obj, "--epsg", str(EPSG), "--gsd", "0.5", "--slope-min", "10",
+             "--boundary", bnd_kml, "--out", os.path.join(OUT, "b"))
+sb = load_summary(os.path.join(OUT, "b")) if rc == 0 else {}
+chk("B1 경계 제한 파이프라인 완주", rc == 0, f"rc={rc}, WP {sb.get('n_waypoints')}")
+chk("B2 경계 적용 후 웨이포인트 감소", rc == 0 and 0 < sb.get("n_waypoints", 0) < so["n_waypoints"],
+    f"{sb.get('n_waypoints')}개 < 무제한 {so['n_waypoints']}개")
+bcsv = os.path.join(OUT, "b", "mission_waypoints.csv")
+e_vals = np.loadtxt(bcsv, delimiter=",", skiprows=1, usecols=3, encoding="utf-8-sig")
+chk("B3 전 웨이포인트가 경계(서쪽 절반) 내부", rc == 0 and float(np.max(e_vals)) < 1.0,
+    f"E 최대값 {float(np.max(e_vals)):.2f} m < 0(경계 동쪽 한계) 부근")
 
 # ── 결과 ──
 fails = sum(not ok for _, ok, _ in checks)

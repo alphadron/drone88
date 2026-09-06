@@ -46,6 +46,7 @@ SURFACE_FILL_COLOR = "5f1478d2"    # 기준면 채움(반투명 주황빛 갈색
 SURFACE_LINE_COLOR = "ff1478d2"    # 기준면 외곽선
 SURFACE_MAX_FACES = 5000           # 이보다 큰 메시는 KML 비대화 방지 위해 생략
 ANCHOR_ICON = "http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png"
+BOUNDARY_LINE_COLOR = "ff0000ff"    # 촬영 경계(사용자 지정) 외곽선 — 적색, aabbggrr
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -129,11 +130,27 @@ def _add_anchor_marker(kml, conv: EnuConverter):
                      f"위치와 다르면 --anchor/--epsg 값을 확인하십시오.")
 
 
+def _add_boundary_outline(kml, conv: EnuConverter, boundary_en):
+    """사용자가 Google Earth(Pro)에서 그려 지정한 촬영 경계 다각형을
+    지면에 고정된 굵은 적색 외곽선으로 표시(실제 웨이포인트 제한 범위와
+    화면상 경계가 일치하는지 육안 확인용)."""
+    if boundary_en is None:
+        return
+    ring = np.vstack([boundary_en, boundary_en[:1]])
+    llh = conv.to_wgs84(np.column_stack([ring, np.zeros(len(ring))]))
+    fol = kml.newfolder(name="촬영 경계(사용자 지정)")
+    ls = fol.newlinestring(name="경계", coords=[tuple(p) for p in llh])
+    ls.altitudemode = simplekml.AltitudeMode.clamptoground
+    ls.tessellate = 1
+    ls.style.linestyle.color = BOUNDARY_LINE_COLOR
+    ls.style.linestyle.width = 4
+
+
 def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
                      name: str = "FacilityPath Mission", wp_label_step: int = 5,
                      surface_mesh=None, surface_max_faces=None,
                      altitude_mode: str = "absolute", wp_extrude: bool = True,
-                     show_anchor_marker: bool = True):
+                     show_anchor_marker: bool = True, boundary_en=None):
     """
     소티별 경로 라인 + 전 웨이포인트 포인트(짐벌·헤딩 ExtendedData) + (선택)
     기준면 반투명 폴리곤 + ENU 원점 핀을 담은 Google Earth 검토용 KML.
@@ -161,6 +178,7 @@ def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
 
     _add_surface_polygons(kml, conv, surface_mesh, max_faces=surface_max_faces,
                           altmode=altmode)
+    _add_boundary_outline(kml, conv, boundary_en)
 
     n = len(waypoints)
     for s in np.unique(sortie_index):
@@ -347,7 +365,8 @@ def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
                    takeoff_z_m: float = 0.0, surface_mesh=None,
                    surface_max_faces=None, wp_label_step: int = 5,
                    altitude_mode: str = "absolute", mission_name: str = "FacilityPath Mission",
-                   wp_extrude: bool = True, show_anchor_marker: bool = True):
+                   wp_extrude: bool = True, show_anchor_marker: bool = True,
+                   boundary_en=None):
     """
     통합 내보내기:
       {prefix}_review.kml            — 전 소티 Earth 검토용(+ 기준면 폴리곤 + 원점 핀)
@@ -360,6 +379,10 @@ def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
     mission_name: review KML의 Document 이름 — 여러 결과물을 Google Earth
     Pro에 동시에 불러왔을 때 Places 패널에서 구분할 수 있도록 실행마다
     다르게(입력 파일명 등 반영) 지정하는 것을 권장한다.
+    boundary_en: 사용자가 Google Earth(Pro)에서 그린 촬영 경계 다각형
+    (로컬 ENU E,N, 선택) — 지정 시 review KML에 굵은 적색 외곽선으로
+    함께 표시(웨이포인트 자체는 planner_base.clip_to_boundary로 이미
+    제한된 상태로 들어온다).
     반환: (생성 파일 목록, ENU 왕복오차[m])
     """
     conv = EnuConverter(anchor)
@@ -371,7 +394,8 @@ def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
     write_review_kml(waypoints, sortie_index, conv, kml_path, name=mission_name,
                      surface_mesh=surface_mesh, surface_max_faces=surface_max_faces,
                      wp_label_step=wp_label_step, altitude_mode=altitude_mode,
-                     wp_extrude=wp_extrude, show_anchor_marker=show_anchor_marker)
+                     wp_extrude=wp_extrude, show_anchor_marker=show_anchor_marker,
+                     boundary_en=boundary_en)
     files.append(kml_path)
 
     for s in np.unique(sortie_index):

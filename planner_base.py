@@ -66,6 +66,44 @@ class PathResult:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 촬영 경계(사용자 지정 다각형) 제한
+# ──────────────────────────────────────────────────────────────────────────────
+def _point_in_polygon(pts_xy: np.ndarray, poly_xy: np.ndarray) -> np.ndarray:
+    """평면(E,N) 다각형 내부 판정 — Ray casting(짝-홀 규칙).
+    pts_xy: (N,2), poly_xy: (M,2, 폐합 불필요). 반환 (N,) bool."""
+    x, y = pts_xy[:, 0], pts_xy[:, 1]
+    inside = np.zeros(len(pts_xy), dtype=bool)
+    px, py = poly_xy[:, 0], poly_xy[:, 1]
+    m = len(poly_xy)
+    j = m - 1
+    for i in range(m):
+        xi, yi, xj, yj = px[i], py[i], px[j], py[j]
+        denom = (yj - yi) if abs(yj - yi) > 1e-15 else 1e-15
+        cross = ((yi > y) != (yj > y)) & (x < (xj - xi) * (y - yi) / denom + xi)
+        inside ^= cross
+        j = i
+    return inside
+
+
+def clip_to_boundary(res: PathResult, boundary_en: np.ndarray) -> PathResult:
+    """사용자가 Google Earth(Pro)에서 그린 다각형(로컬 ENU E,N) 밖의
+    웨이포인트를 제외한다. finalize() 이전에 호출해야 소티 분할·비행시간
+    통계가 최종(클립된) 경로 기준으로 계산된다."""
+    if not res.waypoints:
+        return res
+    pos_xy = res.positions()[:, :2]
+    keep = _point_in_polygon(pos_xy, boundary_en)
+    dropped = int((~keep).sum())
+    if dropped:
+        res.warnings.append(f"[경계] 지정 다각형 밖 {dropped}점 제외")
+    idx = np.where(keep)[0]
+    res.waypoints = [res.waypoints[i] for i in idx]
+    if res.line_index is not None:
+        res.line_index = res.line_index[idx]
+    return res
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 추상 플래너
 # ──────────────────────────────────────────────────────────────────────────────
 class PathPlanner(ABC):
@@ -97,7 +135,8 @@ class PathPlanner(ABC):
         """
 
     # ── 공통 실행 ──
-    def plan(self, surf: SurfaceInfo, mesh_vertices: np.ndarray) -> PathResult:
+    def plan(self, surf: SurfaceInfo, mesh_vertices: np.ndarray,
+            boundary_en: np.ndarray = None) -> PathResult:
         cfg, cam = self.cfg, self.cam
         d = cam.dist_for_gsd(cfg.gsd_m)
         trig, line = cam.spacing(cfg.gsd_m, cfg.fwd_overlap, cfg.side_overlap,
@@ -133,6 +172,12 @@ class PathPlanner(ABC):
         sol = solver.solve(pts, fit_v, surf.mean_normal)
         res.waypoints = sol.waypoints
         res.warnings += solver.warnings
+
+        # ③' 촬영 경계(선택) 제한 — 소티 분할 전에 적용해야 통계가 정확
+        if boundary_en is not None:
+            res = clip_to_boundary(res, boundary_en)
+            if not res.waypoints:
+                return res
 
         # ④⑤ 안전검사·소티 분할·통계 (신규 생성/기존 적응 공용)
         return self.finalize(res, mesh_vertices)

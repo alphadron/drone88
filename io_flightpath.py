@@ -111,6 +111,33 @@ def _read_csv(path: str):
     return data, is_geo
 
 
+def load_boundary_polygon(path: str, anchor: GeoAnchor) -> np.ndarray:
+    """Google Earth(Pro)에서 다각형 도구로 그려 내보낸 KML → 로컬 ENU(E,N)
+    경계 다각형. 문서 내 첫 Polygon만 사용(다중 다각형은 미지원). 높이는
+    무시하고 평면(E,N) 경계로만 취급한다 — 촬영범위 제한(planner_base.
+    clip_to_boundary)용."""
+    root = ET.parse(path).getroot()
+    coords_text = None
+    for el in root.iter():
+        if el.tag.endswith("Polygon"):
+            for c in el.iter():
+                if c.tag.endswith("coordinates") and c.text:
+                    coords_text = c.text
+                    break
+        if coords_text:
+            break
+    if not coords_text:
+        raise ValueError(
+            f"{path}에 Polygon이 없습니다 — Google Earth Pro의 '다각형 추가'로 "
+            f"경계를 그려 KML로 저장한 파일을 지정하십시오")
+    llh = np.array([[float(x) for x in tok.split(",")][:2]
+                    for tok in coords_text.split()])
+    conv = EnuConverter(anchor)
+    en = conv.from_wgs84(np.column_stack([llh[:, 0], llh[:, 1],
+                                          np.full(len(llh), anchor.h)]))
+    return en[:, :2]
+
+
 def load_flightpath(path: str, anchor: GeoAnchor, alt_mode: str = "relative",
                     takeoff_z: float = 0.0) -> InputPath:
     """기존 경로 파일 → 로컬 ENU 웨이포인트."""
