@@ -1,0 +1,28 @@
+# FacilityPath 자동 검증 — push/PR 시 4종 verify 실행
+# (주)드론아이디 AI연구소 · DID-DP-2026-0829
+name: verify
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+jobs:
+  verify:
+    runs-on: windows-latest          # 배포 대상과 동일 OS에서 검증
+    strategy:
+      matrix:
+        python: ["3.12", "3.14"]     # 검증 기준선(3.12) + 현장(3.14) 병행
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install core deps
+        run: pip install -r requirements-py314-core.txt
+      - name: verify_prototype (M2)
+        run: python verify_prototype.py
+      - name: verify_planner_slope (M3)
+        run: python verify_planner_slope.py
+      - name: verify_kml_writer (M4)
+        run: python verify_kml_writer.py
+      - name: verify_io_adapter (v1.1)
+        run: python verify_io_adapter.py

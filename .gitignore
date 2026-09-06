@@ -1,0 +1,44 @@
+# ── 가상환경·캐시 ──
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# ── 실행 산출물 (재생성 가능 — 커밋 금지) ──
+output/
+run*/
+verify_io/
+*.kml
+*.kmz
+*_waypoints.csv
+*_summary.json
+verification_results.csv
+flight_plan_summary.csv
+slope_waypoints.csv
+*.png
+*.pdf
+
+# ── 대용량 입력 데이터 (Git LFS 또는 외부 보관) ──
+data/
+*.obj
+*.ply
+*.stl
+*.las
+*.laz
+*.tif
+*.tiff
+*.asc
+*.xyz
+
+# ── 오프라인 휠 꾸러미 ──
+wheels/
+
+# ── OS·IDE ──
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+.idea/
+
+# ── Claude Code 로컬 설정(개인용) ──
+.claude/settings.local.json
