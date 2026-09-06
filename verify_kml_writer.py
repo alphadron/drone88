@@ -22,9 +22,13 @@
    [K10] surface_max_faces 초과 메시는 KML 비대화 방지 위해 자동 생략
    [K11] wp_label_step=1 → 전 웨이포인트 이름 라벨 표시
    [K12] altitude_mode="relativeToGround" 반영 확인
+   [K13] ENU 원점(기준점) 핀이 review KML에 항상 표시(위치 오류 육안 확인용)
+   [K14] wp_extrude=False → 전 웨이포인트 지면 안내선(extrude) 끔
+   [K15] mission_name → review KML Document 이름 반영(다중 결과물 구분용)
  산출물: slope_mission_review.kml, slope_mission_sortie1.kmz, _sortie2.kmz,
         slope_mission_surf_review.kml, slope_mission_surf_big_review.kml,
-        slope_mission_alllabel_review.kml, slope_mission_rtg_review.kml
+        slope_mission_alllabel_review.kml, slope_mission_rtg_review.kml,
+        slope_mission_noext_review.kml, slope_mission_named_review.kml
 ================================================================================
 """
 
@@ -133,10 +137,12 @@ def main():
     checks.append(("K7 executeHeight 상대고도", h_err <= 0.01,
                    f"ENU z−이륙점 대비 최대오차 {h_err*100:.2f} cm"))
 
-    # ── [K8] 전 웨이포인트 포인트 표시 ──
-    pts_el = tree.findall(".//k:Placemark/k:Point", NSK)
-    checks.append(("K8 전 웨이포인트 점 표시", len(pts_el) == len(res.waypoints),
-                   f"Point Placemark {len(pts_el)}개 = 웨이포인트 {len(res.waypoints)}개"))
+    # ── [K8] 전 웨이포인트 포인트 표시 (ENU 원점 핀은 웨이포인트가 아니므로 제외) ──
+    wp_pts_el = [pm for pm in tree.findall(".//k:Placemark", NSK)
+                if pm.find("k:Point", NSK) is not None
+                and not (pm.findtext("k:name", "", NSK) or "").startswith("ENU 원점")]
+    checks.append(("K8 전 웨이포인트 점 표시", len(wp_pts_el) == len(res.waypoints),
+                   f"Point Placemark {len(wp_pts_el)}개 = 웨이포인트 {len(res.waypoints)}개"))
 
     # ── [K9][K10] 기준면 폴리곤 오버레이(임베드/자동생략) ──
     small_mesh = make_synthetic_slope(ALPHA, ASPECT, width_m=20, length_m=10, grid=4)
@@ -173,8 +179,36 @@ def main():
                    takeoff_z_m=TAKEOFF_Z, altitude_mode="relativeToGround")
     rtg_modes = {e.text for e in
                  ET.parse("slope_mission_rtg_review.kml").findall(".//k:altitudeMode", NSK)}
-    checks.append(("K12 relativeToGround 고도모드", rtg_modes == {"relativeToGround"},
+    # ENU 원점 핀은 항상 clampToGround 고정(§K13) — 경로/기준면 고도모드만 검사
+    checks.append(("K12 relativeToGround 고도모드",
+                   "relativeToGround" in rtg_modes and
+                   rtg_modes <= {"relativeToGround", "clampToGround"},
                    f"altitudeMode 집합 {rtg_modes}"))
+
+    # ── [K13] ENU 원점 핀 표시 ──
+    anchor_names = [e.text for e in
+                    ET.parse("slope_mission_review.kml").findall(".//k:Placemark/k:name", NSK)
+                    if e.text and e.text.startswith("ENU 원점")]
+    checks.append(("K13 ENU 원점 핀 표시", len(anchor_names) == 1,
+                   f"'ENU 원점...' Placemark {len(anchor_names)}개"))
+
+    # ── [K14] wp_extrude=False → 전 웨이포인트 extrude=0 ──
+    export_mission(res.waypoints, res.sortie_index, ANCHOR,
+                   out_prefix="slope_mission_noext", speed_ms=2.5,
+                   takeoff_z_m=TAKEOFF_Z, wp_extrude=False)
+    ext_vals = {e.text for e in
+                ET.parse("slope_mission_noext_review.kml").findall(".//k:Point/k:extrude", NSK)}
+    checks.append(("K14 wp_extrude=False 반영", ext_vals == {"0"},
+                   f"extrude 값 집합 {ext_vals}"))
+
+    # ── [K15] mission_name → Document 이름 반영 ──
+    export_mission(res.waypoints, res.sortie_index, ANCHOR,
+                   out_prefix="slope_mission_named", speed_ms=2.5,
+                   takeoff_z_m=TAKEOFF_Z, mission_name="테스트 미션 이름 XYZ")
+    doc_name = ET.parse("slope_mission_named_review.kml").find(".//k:Document/k:name", NSK)
+    checks.append(("K15 mission_name Document 반영", doc_name is not None and
+                   doc_name.text == "테스트 미션 이름 XYZ",
+                   f"Document/name = {doc_name.text if doc_name is not None else None!r}"))
 
     # ── 판정 ──
     print("\n  ── 검증 판정 ──")

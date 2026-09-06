@@ -45,6 +45,7 @@ WP_END_COLOR = "ff0000ff"    # 종료점(적색)
 SURFACE_FILL_COLOR = "5f1478d2"    # 기준면 채움(반투명 주황빛 갈색, aabbggrr)
 SURFACE_LINE_COLOR = "ff1478d2"    # 기준면 외곽선
 SURFACE_MAX_FACES = 5000           # 이보다 큰 메시는 KML 비대화 방지 위해 생략
+ANCHOR_ICON = "http://maps.google.com/mapfiles/kml/pushpin/wht-pushpin.png"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -113,13 +114,29 @@ def _add_surface_polygons(kml, conv: EnuConverter, mesh, max_faces: int = None,
         pol.style.linestyle.width = 1
 
 
+def _add_anchor_marker(kml, conv: EnuConverter):
+    """ENU 원점(기준점)을 지면에 고정된 핀으로 표시 — 기준점이 실제 현장과
+    다른 곳(엉뚱한 실측 위치)에 잡혔는지 Earth 화면에서 바로 확인하기 위함."""
+    lon, lat, h = conv.to_wgs84(np.zeros((1, 3)))[0]
+    p = kml.newpoint(name="ENU 원점(기준점) — 위치 확인",
+                     coords=[(lon, lat, 0.0)])
+    p.altitudemode = simplekml.AltitudeMode.clamptoground
+    p.style.iconstyle.icon.href = ANCHOR_ICON
+    p.style.iconstyle.scale = 1.2
+    p.style.labelstyle.scale = 1.0
+    p.description = (f"anchor lat={conv.anchor.lat:.7f}, lon={conv.anchor.lon:.7f}, "
+                     f"h={conv.anchor.h:.2f} m — 이 지점이 실제 시설물(사면 등) "
+                     f"위치와 다르면 --anchor/--epsg 값을 확인하십시오.")
+
+
 def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
                      name: str = "FacilityPath Mission", wp_label_step: int = 5,
                      surface_mesh=None, surface_max_faces=None,
-                     altitude_mode: str = "absolute"):
+                     altitude_mode: str = "absolute", wp_extrude: bool = True,
+                     show_anchor_marker: bool = True):
     """
     소티별 경로 라인 + 전 웨이포인트 포인트(짐벌·헤딩 ExtendedData) + (선택)
-    기준면 반투명 폴리곤을 담은 Google Earth 검토용 KML.
+    기준면 반투명 폴리곤 + ENU 원점 핀을 담은 Google Earth 검토용 KML.
     altitude_mode: "absolute"(기준점 타원체고 + z — Earth 실제 지형/기준면
     대비 이격 확인용, 기준점 고도가 부정확하면 경로가 지형에 파묻혀 안 보일
     수 있음) 또는 "relativeToGround"(실제 지형 표면 기준 상대고도 — 기준점
@@ -127,12 +144,20 @@ def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
     점은 전부 아이콘으로 표시하고, wp_label_step=1이면 전 웨이포인트 이름을
     모두 표시한다(기본 5면 과밀 방지를 위해 라벨만 축소, 시작·끝점은 항상
     라벨 표시 + 색상 구분).
+    wp_extrude: 각 점에서 지면까지 수직 안내선을 그릴지 여부. 기준점 고도가
+    실제 지형과 크게 어긋난 상태에서는 이 안내선이 비정상적으로 길게 그려져
+    화면을 뒤덮을 수 있으므로(§실측 사례), 그런 경우 False로 끈다.
+    show_anchor_marker: ENU 원점을 지면 고정 핀으로 표시할지 여부(기본 표시
+    — 기준점 위치가 실제 현장과 다른지 화면에서 바로 확인 가능).
     """
     altmode = _ALT_MODES[altitude_mode]
     enu = np.array([w.position for w in waypoints])
     llh = conv.to_wgs84(enu)
     kml = simplekml.Kml(name=name)
     kml.document.open = 1
+
+    if show_anchor_marker:
+        _add_anchor_marker(kml, conv)
 
     _add_surface_polygons(kml, conv, surface_mesh, max_faces=surface_max_faces,
                           altmode=altmode)
@@ -156,7 +181,7 @@ def write_review_kml(waypoints, sortie_index, conv: EnuConverter, path: str,
             show_label = is_end or k % wp_label_step == 0 or k == len(sel) - 1
             p = pfol.newpoint(name=f"WP{i}", coords=[tuple(llh[i])])
             p.altitudemode = altmode
-            p.extrude = 1                                  # 지면까지 수직 안내선
+            p.extrude = 1 if wp_extrude else 0              # 지면까지 수직 안내선(선택)
             p.style.iconstyle.icon.href = (
                 "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png")
             p.style.iconstyle.scale = 1.1 if is_end else (0.85 if show_label else 0.65)
@@ -321,16 +346,20 @@ def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
                    out_prefix: str = "mission", speed_ms: float = 2.5,
                    takeoff_z_m: float = 0.0, surface_mesh=None,
                    surface_max_faces=None, wp_label_step: int = 5,
-                   altitude_mode: str = "absolute"):
+                   altitude_mode: str = "absolute", mission_name: str = "FacilityPath Mission",
+                   wp_extrude: bool = True, show_anchor_marker: bool = True):
     """
     통합 내보내기:
-      {prefix}_review.kml            — 전 소티 Earth 검토용(+ 기준면 폴리곤)
+      {prefix}_review.kml            — 전 소티 Earth 검토용(+ 기준면 폴리곤 + 원점 핀)
       {prefix}_sortie{N}.kmz         — 소티별 Pilot 2 WPML
     surface_mesh: 대상 기준면(로컬 ENU Trimesh, 선택) — 지정 시 review KML에
     반투명 폴리곤으로 함께 표시. surface_max_faces 초과 시(기본
     SURFACE_MAX_FACES) 자동 생략해 KML 비대화를 막는다.
     wp_label_step: 웨이포인트 이름 라벨 표시 간격(1=전부 표시).
-    altitude_mode: write_review_kml 참고("absolute"|"relativeToGround").
+    altitude_mode/wp_extrude/show_anchor_marker: write_review_kml 참고.
+    mission_name: review KML의 Document 이름 — 여러 결과물을 Google Earth
+    Pro에 동시에 불러왔을 때 Places 패널에서 구분할 수 있도록 실행마다
+    다르게(입력 파일명 등 반영) 지정하는 것을 권장한다.
     반환: (생성 파일 목록, ENU 왕복오차[m])
     """
     conv = EnuConverter(anchor)
@@ -339,9 +368,10 @@ def export_mission(waypoints, sortie_index, anchor: GeoAnchor,
 
     files = []
     kml_path = f"{out_prefix}_review.kml"
-    write_review_kml(waypoints, sortie_index, conv, kml_path,
+    write_review_kml(waypoints, sortie_index, conv, kml_path, name=mission_name,
                      surface_mesh=surface_mesh, surface_max_faces=surface_max_faces,
-                     wp_label_step=wp_label_step, altitude_mode=altitude_mode)
+                     wp_label_step=wp_label_step, altitude_mode=altitude_mode,
+                     wp_extrude=wp_extrude, show_anchor_marker=show_anchor_marker)
     files.append(kml_path)
 
     for s in np.unique(sortie_index):

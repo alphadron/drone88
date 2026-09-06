@@ -162,6 +162,12 @@ def run(a):
         ip = load_flightpath(a.input, ref.anchor, alt_mode=a.alt_mode,
                              takeoff_z=a.takeoff_z)
         print(f"    입력 경로: {ip.fmt.upper()} {ip.source} ({ip.note})")
+        path_center = ip.enu[:, :2].mean(axis=0)
+        model_center = ref.mesh.vertices[:, :2].mean(axis=0)
+        center_dist = float(np.hypot(*(path_center - model_center)))
+        if center_dist > 500.0:
+            print(f"    ⚠ 기준면-입력 경로 중심 거리 {center_dist:.0f} m — 기준면과 "
+                  f"입력 경로가 같은 현장을 가리키는지 --anchor/--epsg 값을 확인하십시오")
         adapter = PathAdapter(cam, cfg, AdaptConfig(
             approach_dist_m=None if a.approach is None else a.approach,
             keep_distance=a.keep_distance, max_snap_m=a.max_snap))
@@ -184,11 +190,15 @@ def run(a):
 
     # [6] 출력 ---------------------------------------------------------------------
     banner(6, "출력 (kml_writer)")
+    mission_name = a.mission_name or (
+        f"FacilityPath {a.mode} — {os.path.basename(a.input)}")
     files, rt = export_mission(res.waypoints, res.sortie_index, ref.anchor,
                                out_prefix=prefix, speed_ms=cfg.speed_ms,
                                takeoff_z_m=a.takeoff_z, surface_mesh=ref.mesh,
                                wp_label_step=a.wp_label_step,
-                               altitude_mode=a.kml_altmode)
+                               altitude_mode=a.kml_altmode,
+                               mission_name=mission_name, wp_extrude=a.wp_extrude,
+                               show_anchor_marker=a.show_anchor_marker)
     write_csv(res, prefix + "_waypoints.csv"); files.append(prefix + "_waypoints.csv")
     summ = summarize(res, ref, a.mode, surf)
     summ["enu_roundtrip_err_m"] = rt
@@ -237,6 +247,18 @@ def build_parser():
                        help="review KML 고도 기준. absolute=기준점 타원체고+z"
                             "(기준점 고도가 부정확하면 지형에 파묻혀 안 보일 수 있음), "
                             "relativeToGround=실제 지표 기준(항상 지표 위에 표시)")
+        v.add_argument("--mission-name", default=None,
+                       help="review KML Document 이름(미지정 시 입력 파일명+모드로 "
+                            "자동 생성) — 여러 결과물을 Earth Pro에 동시에 열어도 "
+                            "Places 패널에서 구분되도록 실행마다 다르게 남는다")
+        v.add_argument("--wp-extrude", action=argparse.BooleanOptionalAction, default=True,
+                       help="웨이포인트마다 지면까지 수직 안내선 표시(기본 켜짐). "
+                            "기준점 고도가 실제 지형과 크게 다르면 안내선이 비정상적으로 "
+                            "길게 그려질 수 있으므로 --no-wp-extrude로 끌 수 있다")
+        v.add_argument("--show-anchor-marker", action=argparse.BooleanOptionalAction,
+                       default=True,
+                       help="ENU 원점(기준점)을 지면 고정 핀으로 표시(기본 켜짐) — "
+                            "기준점이 실제 시설물 위치와 다른지 화면에서 바로 확인용")
         sp.add_argument("--out", default="output", help="출력 폴더")
 
     g = sub.add_parser("generate", help="3D 모델/DSM → 경로 신규 생성")
