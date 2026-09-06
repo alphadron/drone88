@@ -39,6 +39,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -72,7 +73,9 @@ def parse_anchor(s):
 
 
 def parse_ratio(s):
-    """경사비 문자열 'V:H' (예: '1:0.3') → (V, H) float 튜플."""
+    """경사비 문자열 'V:H' → (V, H) float 튜플. V의 부호가 경사 회전방향:
+    +(시계방향, 기준선 진행방향의 오른쪽이 올라감) / −(반시계방향, 왼쪽).
+    예: '1:0.3'(시계) · '-1:0.3'(반시계)."""
     v, h = [float(x) for x in s.split(":")]
     return v, h
 
@@ -139,15 +142,15 @@ def run(a):
         ratio_v, ratio_h = parse_ratio(a.slope_ratio)
         mesh, sinfo = build_slope_from_boundary(
             boundary_en, ratio_v, ratio_h,
-            baseline_azimuth_deg=a.baseline_azimuth, height_m=a.slope_height,
-            flip_side=a.flip_side)
+            baseline_azimuth_deg=a.baseline_azimuth, height_m=a.slope_height)
         ref = ReferenceModel(mesh, anchor, a.boundary, "boundary")
         print(f"    BOUNDARY {a.boundary} → 경계 다각형 {len(boundary_en)}점 기반 "
               f"사면 자동 구성 (정점 {len(mesh.vertices):,} / 면 {len(mesh.faces):,})")
-        print(f"    기준선 방위 {sinfo['baseline_azimuth_deg']:.1f}° | 경사방향(aspect) "
-              f"{sinfo['aspect_deg']:.1f}° | 폭 {sinfo['width_m']:.1f} m | "
-              f"수평런 {sinfo['run_m']:.1f} m | 높이 {sinfo['height_m']:.1f} m "
-              f"({sinfo['height_source']})")
+        print(f"    기준선(밑변) 방위 {sinfo['baseline_azimuth_deg']:.1f}° | "
+              f"회전 {sinfo['rotation']} → 오르막 {sinfo['rise_azimuth_deg']:.1f}° | "
+              f"경사방향(aspect) {sinfo['aspect_deg']:.1f}°")
+        print(f"    폭 {sinfo['width_m']:.1f} m | 수평런 {sinfo['run_m']:.1f} m | "
+              f"높이 {sinfo['height_m']:.1f} m ({sinfo['height_source']})")
     else:
         ref_path = a.model if a.mode == "adapt" else a.input
         if not ref_path:
@@ -316,9 +319,11 @@ def build_parser():
     bg = g.add_argument_group("경계 기반 사면 자동 구성 (input 생략 시)")
     bg.add_argument("--slope-ratio",
                     help="경사비 'V:H'(예: '1:0.3') — 지정 시 input 없이 "
-                         "--boundary 다각형만으로 배터 사면을 자동 구성한다. "
-                         "기준선(진행방향)은 다각형 정점의 수평 주성분으로 "
-                         "자동 검출되어 --boundary와 항상 연동된다")
+                         "--boundary 다각형만으로 사면을 구성한다. 경사면 밑변을 "
+                         "다각형 밑변(기준선)에 일치시키고 그 기준선을 축으로 "
+                         "회전시킨다. V의 부호가 회전방향: +는 시계방향(기준선 "
+                         "진행방향의 오른쪽이 올라감), -는 반시계방향(왼쪽이 "
+                         "올라감). 예: '1:0.3' / '-1:0.3'")
     bg.add_argument("--slope-height", type=float, default=None,
                     help="사면 높이[m] 직접 지정(미지정 시 다각형 투영폭×"
                          "경사비로 자동 역산 — 도면이 부정확할 때 보정용)")
@@ -326,11 +331,6 @@ def build_parser():
                     help="기준선 방위각[deg, 북=0 동=90] 수동 지정(미지정 시 "
                          "다각형 PCA로 자동 검출 — 곡선 구간이 섞여 자동검출이 "
                          "부정확할 때 보정용)")
-    bg.add_argument("--flip-side", action="store_true",
-                    help="다각형의 어느 쪽 끝이 오르막(크레스트)인지는 평면"
-                         "정보만으로 알 수 없어 기본값은 임의 선택된다 — 생성된 "
-                         "review KML의 사면 방향이 실제 위성사진과 반대면 이 "
-                         "옵션으로 뒤집는다")
     common(g)
 
     ad = sub.add_parser("adapt", help="기존 경로(KML/KMZ/CSV) → 시설물 형상 적응")
@@ -347,5 +347,21 @@ def build_parser():
     return p
 
 
+def normalize_argv(argv):
+    """'--slope-ratio -1:0.3' 처럼 값이 '-'로 시작하면 argparse가 옵션으로
+    오해하므로 '--slope-ratio=-1:0.3' 형태로 합쳐준다(반시계 경사 지정)."""
+    out, i = [], 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--slope-ratio" and i + 1 < len(argv) and \
+                re.fullmatch(r"[+-]?\d*\.?\d+\s*:\s*\d*\.?\d+", argv[i + 1]):
+            out.append(f"--slope-ratio={argv[i + 1]}")
+            i += 2
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 if __name__ == "__main__":
-    run(build_parser().parse_args())
+    run(build_parser().parse_args(normalize_argv(sys.argv[1:])))

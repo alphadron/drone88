@@ -17,11 +17,12 @@
                      → 웨이포인트 중복 집계 방지 (실제 파사드 KML 테스트로 발견)
    [B] 촬영 경계   : Google Earth Pro 다각형 KML(사면 서쪽 절반만 포함)
                      → generate --boundary → 다각형 밖 웨이포인트 제외 확인
-   [S] 경계→사면 자동구성 : 실측 topview 다각형 + 경사비만으로(3D 모델 없이)
-                     기준선(PCA)·높이 자동 역산 → generate --slope-ratio 연동,
-                     기준면이 다각형 전체를 덮는지(절반 누락 회귀 방지)·
-                     flip_side 180° 반전 확인
- 판정 항목 25건. 산출물: verify_io/ 폴더
+   [S] 경계→사면 구성 : 실측 topview 다각형 + 경사비만으로(3D 모델 없이)
+                     기준선(밑변)·높이 자동 산출 → generate --slope-ratio 연동.
+                     기준면이 다각형 전체를 덮는지, 경사비 부호가 회전방향
+                     (+시계=오른쪽 오르막 / −반시계=왼쪽)인지, 경사면 밑변이
+                     다각형 밑변과 일치하는지 확인
+ 판정 항목 28건. 산출물: verify_io/ 폴더
 ================================================================================
 """
 
@@ -243,11 +244,29 @@ chk("S7 기준면이 다각형 전체를 커버(절반 누락 회귀 방지)", c
     f"다각형 범위 {rect_en.min(axis=0)}~{rect_en.max(axis=0)} ⊂ 메시 범위 "
     f"{mesh_bb_lo}~{mesh_bb_hi}")
 
-# S8: flip_side로 사면 방향(aspect)이 정확히 180° 반전되는지
-_, info_flip = build_slope_from_boundary(rect_en, 1.0, 0.3, flip_side=True)
-aspect_diff = abs((info_s["aspect_deg"] - info_flip["aspect_deg"]) % 360 - 180)
-chk("S8 flip_side로 사면방향 180° 반전", aspect_diff < 0.1,
-    f"aspect {info_s['aspect_deg']:.1f}° -> flip {info_flip['aspect_deg']:.1f}°")
+# S8: 경사비 부호 = 회전방향 — +는 기준선 진행방향의 오른쪽, -는 왼쪽이 올라감
+mesh_ccw, info_ccw = build_slope_from_boundary(rect_en, -1.0, 0.3)
+u_az = np.radians(info_s["baseline_azimuth_deg"])
+u2_chk = np.array([np.sin(u_az), np.cos(u_az)])
+rise_cw = np.array([np.sin(np.radians(info_s["rise_azimuth_deg"])),
+                    np.cos(np.radians(info_s["rise_azimuth_deg"]))])
+right_of_u = np.array([u2_chk[1], -u2_chk[0]])          # 진행방향 오른쪽
+chk("S8 +부호=시계방향(진행방향 오른쪽이 오르막)", float(rise_cw @ right_of_u) > 0.999,
+    f"오르막 {info_s['rise_azimuth_deg']:.1f}° vs 기준선 오른쪽 "
+    f"{np.degrees(np.arctan2(right_of_u[0], right_of_u[1])) % 360:.1f}°")
+rot_diff = abs((info_s["rise_azimuth_deg"] - info_ccw["rise_azimuth_deg"]) % 360 - 180)
+chk("S9 -부호=반시계방향(오르막 180° 반대)", rot_diff < 0.1,
+    f"오르막 {info_s['rise_azimuth_deg']:.1f}° ↔ {info_ccw['rise_azimuth_deg']:.1f}°")
+
+# S10: 경사면 밑변(z 최소)이 다각형의 밑변(오르막축 최솟값)과 일치하는지
+for tag, m_, i_ in (("+", mesh_s, info_s), ("-", mesh_ccw, info_ccw)):
+    rz = np.radians(i_["rise_azimuth_deg"])
+    rise_v = np.array([np.sin(rz), np.cos(rz)])
+    zmin = m_.vertices[:, 2].min()
+    base_r = (m_.vertices[np.abs(m_.vertices[:, 2] - zmin) < 1e-6][:, :2] @ rise_v).mean()
+    poly_r = float((rect_en @ rise_v).min())
+    chk(f"S1{1 if tag=='+' else 2} 경사면 밑변↔다각형 밑변 일치({tag})",
+        abs(base_r - poly_r) < 0.01, f"밑변 {base_r:.2f} m vs 다각형 최소 {poly_r:.2f} m")
 
 # S5~: CLI 통합 — input(3D모델) 없이 --boundary + --slope-ratio 만으로 generate
 rc = run_cli("generate", "--slope-ratio", "1:0.3", "--boundary", bnd_kml,
