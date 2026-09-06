@@ -17,7 +17,9 @@
                      → 웨이포인트 중복 집계 방지 (실제 파사드 KML 테스트로 발견)
    [B] 촬영 경계   : Google Earth Pro 다각형 KML(사면 서쪽 절반만 포함)
                      → generate --boundary → 다각형 밖 웨이포인트 제외 확인
- 판정 항목 17건. 산출물: verify_io/ 폴더
+   [S] 경계→사면 자동구성 : 실측 topview 다각형 + 경사비만으로(3D 모델 없이)
+                     기준선(PCA)·높이 자동 역산 → generate --slope-ratio 연동
+ 판정 항목 23건. 산출물: verify_io/ 폴더
 ================================================================================
 """
 
@@ -37,6 +39,7 @@ from pyproj import CRS, Transformer
 from surface_analyzer import make_synthetic_slope
 from kml_writer import GeoAnchor, EnuConverter
 from io_flightpath import load_flightpath
+from io_model import build_slope_from_boundary
 
 OUT = "verify_io"
 ALPHA, ASPECT = 60.0, 180.0
@@ -209,6 +212,34 @@ bcsv = os.path.join(OUT, "b", "mission_waypoints.csv")
 e_vals = np.loadtxt(bcsv, delimiter=",", skiprows=1, usecols=3, encoding="utf-8-sig")
 chk("B3 전 웨이포인트가 경계(서쪽 절반) 내부", rc == 0 and float(np.max(e_vals)) < 1.0,
     f"E 최대값 {float(np.max(e_vals)):.2f} m < 0(경계 동쪽 한계) 부근")
+
+# ============ [S] 경계 다각형 기반 사면 자동 구성(기준선 연동) =================
+print("\n[S] 경계 다각형(Google Earth Pro 실측 topview) → 사면 자동 구성·연동")
+# S1: 함수 단위 검증 — 남북으로 긴 직사각형(bnd_kml과 동일 형상)을 로컬 ENU로
+# 직접 만들어, 기준선(남북, PCA)·수평런(폭 70m의 절반=35m)·역산 높이가
+# 경계 폭에 정확히 연동되는지 확인
+rect_en = np.array([[-35.0, -70.0], [35.0, -70.0], [35.0, 70.0], [-35.0, 70.0]])
+mesh_s, info_s = build_slope_from_boundary(rect_en, 1.0, 0.3)
+exp_alpha = np.degrees(np.arctan(1.0 / 0.3))
+exp_run, exp_height = 35.0, 35.0 * (1.0 / 0.3)
+chk("S1 기준선(PCA) 남북 자동검출", abs(abs(info_s["baseline_azimuth_deg"] % 180) - 0) < 1.0,
+    f"기준선 방위 {info_s['baseline_azimuth_deg']:.1f}° (남북 0/180° 기대)")
+chk("S2 경사각 1:0.3 → α=73.3°", abs(info_s["alpha_deg"] - exp_alpha) < 0.1,
+    f"α={info_s['alpha_deg']:.2f}° (기대 {exp_alpha:.2f}°)")
+chk("S3 경계 폭↔수평런 연동", abs(info_s["run_m"] - exp_run) < 0.1,
+    f"run={info_s['run_m']:.2f} m (경계 반폭 {exp_run} m와 일치)")
+chk("S4 수평런↔높이 자동 역산", abs(info_s["height_m"] - exp_height) < 0.5,
+    f"height={info_s['height_m']:.2f} m (기대 {exp_height:.2f} m)")
+
+# S5~: CLI 통합 — input(3D모델) 없이 --boundary + --slope-ratio 만으로 generate
+rc = run_cli("generate", "--slope-ratio", "1:0.3", "--boundary", bnd_kml,
+             "--gsd", "0.5", "--slope-min", "60", "--out", os.path.join(OUT, "s"))
+ssum = load_summary(os.path.join(OUT, "s")) if rc == 0 else {}
+chk("S5 input 없이 경계+경사비만으로 생성", rc == 0, f"rc={rc}, WP {ssum.get('n_waypoints')}")
+chk("S6 α=73.3°, φ=-16.7° 반영", rc == 0 and
+    abs(ssum.get("surface", {}).get("slope_deg", 0) - exp_alpha) < 0.5 and
+    max(abs(p - (exp_alpha - 90)) for p in ssum.get("pitch_range_deg", [999])) < 0.5,
+    f"α={ssum.get('surface',{}).get('slope_deg')}°, φ 범위 {ssum.get('pitch_range_deg')}")
 
 # ── 결과 ──
 fails = sum(not ok for _, ok, _ in checks)

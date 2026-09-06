@@ -46,9 +46,9 @@ sys.stderr.reconfigure(encoding="utf-8")
 
 import numpy as np
 
-from kml_writer import GeoAnchor, export_mission
-from io_model import load_reference
-from io_flightpath import load_flightpath, load_boundary_polygon
+from kml_writer import GeoAnchor, EnuConverter, export_mission
+from io_model import load_reference, ReferenceModel, build_slope_from_boundary
+from io_flightpath import load_flightpath, load_boundary_polygon, read_boundary_llh
 from surface_analyzer import SurfaceAnalyzer
 from camera import get_camera
 from planner_base import PlanConfig, clip_to_boundary
@@ -69,6 +69,12 @@ def parse_anchor(s):
         return None
     lat, lon, h = [float(x) for x in s.split(",")]
     return GeoAnchor(lat=lat, lon=lon, h=h)
+
+
+def parse_ratio(s):
+    """경사비 문자열 'V:H' (예: '1:0.3') → (V, H) float 튜플."""
+    v, h = [float(x) for x in s.split(":")]
+    return v, h
 
 
 def make_plan_config(a) -> PlanConfig:
@@ -121,17 +127,44 @@ def run(a):
 
     # [1] 기준면 입력 ------------------------------------------------------------
     banner(1, "기준면 입력 (io_model)")
-    ref_path = a.model if a.mode == "adapt" else a.input
-    ref = load_reference(ref_path, epsg=a.epsg, anchor=parse_anchor(a.anchor),
-                         dsm_step=a.dsm_step)
-    print(f"    {ref.kind.upper():4s} {ref.source} → 정점 {len(ref.mesh.vertices):,} / "
-          f"면 {len(ref.mesh.faces):,}")
+    if a.mode == "generate" and a.slope_ratio:
+        if not a.boundary:
+            sys.exit("    ✗ --slope-ratio 사용 시 --boundary(KML/KMZ 다각형) 필수")
+        llh = read_boundary_llh(a.boundary)
+        anchor = parse_anchor(a.anchor) or GeoAnchor(
+            lat=float(llh[:, 1].mean()), lon=float(llh[:, 0].mean()), h=0.0)
+        conv = EnuConverter(anchor)
+        boundary_en = conv.from_wgs84(np.column_stack(
+            [llh[:, 0], llh[:, 1], np.full(len(llh), anchor.h)]))[:, :2]
+        ratio_v, ratio_h = parse_ratio(a.slope_ratio)
+        mesh, sinfo = build_slope_from_boundary(
+            boundary_en, ratio_v, ratio_h,
+            baseline_azimuth_deg=a.baseline_azimuth, height_m=a.slope_height)
+        ref = ReferenceModel(mesh, anchor, a.boundary, "boundary")
+        print(f"    BOUNDARY {a.boundary} → 경계 다각형 {len(boundary_en)}점 기반 "
+              f"사면 자동 구성 (정점 {len(mesh.vertices):,} / 면 {len(mesh.faces):,})")
+        print(f"    기준선 방위 {sinfo['baseline_azimuth_deg']:.1f}° | 경사방향(aspect) "
+              f"{sinfo['aspect_deg']:.1f}° | 폭 {sinfo['width_m']:.1f} m | "
+              f"수평런 {sinfo['run_m']:.1f} m | 높이 {sinfo['height_m']:.1f} m "
+              f"({sinfo['height_source']})")
+    else:
+        ref_path = a.model if a.mode == "adapt" else a.input
+        if not ref_path:
+            sys.exit("    ✗ 입력 파일이 필요합니다 (또는 --slope-ratio + --boundary 사용)")
+        ref = load_reference(ref_path, epsg=a.epsg, anchor=parse_anchor(a.anchor),
+                             dsm_step=a.dsm_step)
+        print(f"    {ref.kind.upper():4s} {ref.source} → 정점 {len(ref.mesh.vertices):,} / "
+              f"면 {len(ref.mesh.faces):,}")
     print(f"    ENU 원점: {ref.anchor.lat:.7f}N {ref.anchor.lon:.7f}E h={ref.anchor.h:.1f} m")
 
-    boundary_en = None
-    if a.boundary:
+    slope_built_from_boundary = a.mode == "generate" and bool(a.slope_ratio)
+    if a.boundary and not slope_built_from_boundary:
         boundary_en = load_boundary_polygon(a.boundary, ref.anchor)
         print(f"    촬영 경계: {a.boundary} ({len(boundary_en)}점, ENU 원점 기준)")
+    elif not a.boundary:
+        boundary_en = None
+    # slope_built_from_boundary인 경우 위 [1]단계에서 이미 boundary_en을
+    # 계산·출력했으므로 그대로 재사용(동일 다각형으로 웨이포인트도 클립)
 
     # [2] 대상면 분석 --------------------------------------------------------------
     banner(2, "대상면 분석 (surface_analyzer)")
@@ -199,7 +232,7 @@ def run(a):
     # [6] 출력 ---------------------------------------------------------------------
     banner(6, "출력 (kml_writer)")
     mission_name = a.mission_name or (
-        f"FacilityPath {a.mode} — {os.path.basename(a.input)}")
+        f"FacilityPath {a.mode} — {os.path.basename(a.input or a.boundary)}")
     files, rt = export_mission(res.waypoints, res.sortie_index, ref.anchor,
                                out_prefix=prefix, speed_ms=cfg.speed_ms,
                                takeoff_z_m=a.takeoff_z, surface_mesh=ref.mesh,
@@ -275,8 +308,23 @@ def build_parser():
         sp.add_argument("--out", default="output", help="출력 폴더")
 
     g = sub.add_parser("generate", help="3D 모델/DSM → 경로 신규 생성")
-    g.add_argument("input", help="OBJ/PLY/STL 메시 또는 DSM(.tif/.asc/.xyz)")
+    g.add_argument("input", nargs="?", default=None,
+                   help="OBJ/PLY/STL 메시 또는 DSM(.tif/.asc/.xyz). "
+                        "--slope-ratio + --boundary 사용 시 생략 가능")
     g.add_argument("--facility", choices=["slope", "bridge", "dam"], default="slope")
+    bg = g.add_argument_group("경계 기반 사면 자동 구성 (input 생략 시)")
+    bg.add_argument("--slope-ratio",
+                    help="경사비 'V:H'(예: '1:0.3') — 지정 시 input 없이 "
+                         "--boundary 다각형만으로 배터 사면을 자동 구성한다. "
+                         "기준선(진행방향)은 다각형 정점의 수평 주성분으로 "
+                         "자동 검출되어 --boundary와 항상 연동된다")
+    bg.add_argument("--slope-height", type=float, default=None,
+                    help="사면 높이[m] 직접 지정(미지정 시 다각형 투영폭×"
+                         "경사비로 자동 역산 — 도면이 부정확할 때 보정용)")
+    bg.add_argument("--baseline-azimuth", type=float, default=None,
+                    help="기준선 방위각[deg, 북=0 동=90] 수동 지정(미지정 시 "
+                         "다각형 PCA로 자동 검출 — 곡선 구간이 섞여 자동검출이 "
+                         "부정확할 때 보정용)")
     common(g)
 
     ad = sub.add_parser("adapt", help="기존 경로(KML/KMZ/CSV) → 시설물 형상 적응")

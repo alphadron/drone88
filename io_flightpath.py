@@ -111,12 +111,20 @@ def _read_csv(path: str):
     return data, is_geo
 
 
-def load_boundary_polygon(path: str, anchor: GeoAnchor) -> np.ndarray:
-    """Google Earth(Pro)에서 다각형 도구로 그려 내보낸 KML → 로컬 ENU(E,N)
-    경계 다각형. 문서 내 첫 Polygon만 사용(다중 다각형은 미지원). 높이는
-    무시하고 평면(E,N) 경계로만 취급한다 — 촬영범위 제한(planner_base.
-    clip_to_boundary)용."""
-    root = ET.parse(path).getroot()
+def read_boundary_llh(path: str) -> np.ndarray:
+    """Google Earth(Pro)에서 다각형 도구로 그려 내보낸 KML/KMZ → 원시
+    [lon, lat] 배열(고도 무시). 문서 내 첫 Polygon만 사용(다중 다각형은
+    미지원). 기준점(anchor)이 아직 없을 때(예: 다각형 중심을 anchor로
+    자동 유도) 쓰기 위해 좌표변환 없이 반환한다."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".kmz":
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist() if n.lower().endswith(".kml")]
+            if not names:
+                raise ValueError(f"{path} 안에 KML이 없습니다")
+            root = ET.fromstring(z.read(names[0]))
+    else:
+        root = ET.parse(path).getroot()
     coords_text = None
     for el in root.iter():
         if el.tag.endswith("Polygon"):
@@ -129,9 +137,15 @@ def load_boundary_polygon(path: str, anchor: GeoAnchor) -> np.ndarray:
     if not coords_text:
         raise ValueError(
             f"{path}에 Polygon이 없습니다 — Google Earth Pro의 '다각형 추가'로 "
-            f"경계를 그려 KML로 저장한 파일을 지정하십시오")
-    llh = np.array([[float(x) for x in tok.split(",")][:2]
-                    for tok in coords_text.split()])
+            f"경계를 그려 KML/KMZ로 저장한 파일을 지정하십시오")
+    return np.array([[float(x) for x in tok.split(",")][:2]
+                     for tok in coords_text.split()])
+
+
+def load_boundary_polygon(path: str, anchor: GeoAnchor) -> np.ndarray:
+    """read_boundary_llh() 결과를 anchor 기준 로컬 ENU(E,N) 경계 다각형으로
+    변환 — 촬영범위 제한(planner_base.clip_to_boundary)용."""
+    llh = read_boundary_llh(path)
     conv = EnuConverter(anchor)
     en = conv.from_wgs84(np.column_stack([llh[:, 0], llh[:, 1],
                                           np.full(len(llh), anchor.h)]))
